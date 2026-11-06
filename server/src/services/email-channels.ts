@@ -1319,7 +1319,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
           );
         if (
           !conversation &&
-          (isAutomaticEmail(message) || message.labels.includes("sent"))
+          message.labels.includes("sent")
         ) {
           await tx
             .update(chatDeliveries)
@@ -1425,7 +1425,6 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
         event.wakePending =
           !alreadyRetained &&
           task.status !== "cancelled" &&
-          !isAutomaticEmail(message) &&
           !message.labels.includes("sent");
         await tx
           .update(chatDeliveries)
