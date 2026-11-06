@@ -66,6 +66,7 @@ import {
   emailText,
   emailReplyRecipients,
   isAutomaticEmail,
+  isAutoReplyEmail,
   isFilteredEmail,
   normalizeAgentmailEvent,
   verifyAgentmailWebhook,
@@ -1232,7 +1233,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
         endpoint.botExternalId!,
         message.thread_id,
       );
-      await db.transaction(async (tx) => {
+      const intake = await db.transaction(async (tx) => {
         await lock(tx, `${endpoint.id}:${message.thread_id}`);
         const [current] = await tx
           .select()
@@ -1306,7 +1307,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
             .update(chatDeliveries)
             .set({ state: "processed", processedAt: new Date() })
             .where(eq(chatDeliveries.id, delivery.id));
-          return;
+          return "settled" as const;
         }
         const [alreadyRetained] = await tx
           .select({ id: emailMessages.id })
@@ -1317,15 +1318,14 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
               eq(emailMessages.providerMessageId, message.message_id),
             ),
           );
-        if (
-          !conversation &&
-          (isAutomaticEmail(message) || message.labels.includes("sent"))
-        ) {
+        // Keep automatic mail on a new thread. Only the inbox's own sent copy is filtered.
+        // Auto-replies are kept in backlog without a wake, so they cannot start a reply loop.
+        if (!conversation && message.labels.includes("sent")) {
           await tx
             .update(chatDeliveries)
             .set({ state: "filtered", processedAt: new Date() })
             .where(eq(chatDeliveries.id, delivery.id));
-          return;
+          return "settled" as const;
         }
         if (!conversation) {
           const placement = await inboundPlacement(
@@ -1360,7 +1360,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
               ...(defaults.workspace ? { workspaceSelection: defaults.workspace, workspaceSelectionSource: "channel" as const } : {}),
               title: message.subject.slice(0, 200),
               description: `Email conversation for ${current.botExternalId}`,
-              status: "todo",
+              status: isAutoReplyEmail(message) ? "backlog" : "todo",
               priority: "medium",
               assigneeAgentId: current.assignedAgentId,
               responsibleUserId: current.sponsorUserId,
@@ -1408,7 +1408,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
         if (
           !alreadyRetained &&
           task.status === "done" &&
-          !isAutomaticEmail(message)
+          !isAutoReplyEmail(message)
         )
           await issueService(db).update(task.id, { status: "todo" }, tx);
         const [link] = await tx
@@ -1425,7 +1425,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
         event.wakePending =
           !alreadyRetained &&
           task.status !== "cancelled" &&
-          !isAutomaticEmail(message) &&
+          !isAutoReplyEmail(message) &&
           !message.labels.includes("sent");
         await tx
           .update(chatDeliveries)
@@ -1446,7 +1446,10 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
           companyId: endpoint.companyId, issueId: task.id, agentId: endpoint.assignedAgentId, responsibleUserId: null, sponsored: true,
           sourceKey: `comment:${link.commentId}`, sourceCommentId: link.commentId, acceptedAt: new Date(), endpointId: endpoint.id, conversationId: conversation.id, deliveryId: delivery.id,
         });
+        return "retained" as const;
       });
+      // A settled delivery has its final state. Do not overwrite it below.
+      if (intake === "settled") return;
     }
     if (event.wakePending && event.issueId) {
       await active(endpoint);

@@ -177,6 +177,21 @@ export function isAutomaticEmail(message: AgentmailMessage): boolean {
       headers["x-autorespond"],
   );
 }
+// An auto-reply answers another message, so an agent reply to it can loop.
+// Other automatic mail (bulk, auto-generated) is normal inbound work.
+export function isAutoReplyEmail(message: AgentmailMessage): boolean {
+  const headers = Object.fromEntries(
+    Object.entries(message.headers).map(([k, v]) => [
+      k.toLowerCase(),
+      v.toLowerCase(),
+    ]),
+  );
+  return Boolean(
+    headers["auto-submitted"] === "auto-replied" ||
+      headers["x-autoreply"] ||
+      headers["x-autorespond"],
+  );
+}
 export function isFilteredEmail(message: AgentmailMessage): boolean {
   return message.labels.some((label) =>
     ["spam", "blocked", "unauthenticated", "trash"].includes(label),

@@ -8,6 +8,7 @@ import {
   emailText,
   emailReplyRecipients,
   isAutomaticEmail,
+  isAutoReplyEmail,
   isFilteredEmail,
   normalizeAgentmailEvent,
   verifyAgentmailWebhook,
@@ -143,6 +144,22 @@ describe("AgentMail protocol boundary", () => {
     ).toBe(false);
     for (const label of ["spam", "blocked", "unauthenticated"])
       expect(isFilteredEmail(message({ labels: [label] }))).toBe(true);
+  });
+  it("separates auto-replies from other automatic mail", () => {
+    for (const headers of [
+      { "Auto-Submitted": "auto-replied" },
+      { "X-Autoreply": "yes" },
+      { "X-Autorespond": "yes" },
+    ])
+      expect(isAutoReplyEmail(message({ headers }))).toBe(true);
+    for (const headers of [
+      { "Auto-Submitted": "auto-generated" },
+      { Precedence: "bulk" },
+      { Precedence: "list" },
+    ]) {
+      expect(isAutomaticEmail(message({ headers }))).toBe(true);
+      expect(isAutoReplyEmail(message({ headers }))).toBe(false);
+    }
   });
   it("pins the API host, encodes message IDs and preserves the provider idempotency key", async () => {
     const fetcher = vi

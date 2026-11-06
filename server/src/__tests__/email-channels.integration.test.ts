@@ -655,7 +655,26 @@ describe("AgentMail durable email pipeline", () => {
       (await f.service.thread(f.companyId, c.issueId))?.messages,
     ).toHaveLength(4);
   });
-  it("filters spam and automatic conversations and escapes remote Markdown images", async () => {
+  it("treats new bulk or auto-generated mail as normal work", async () => {
+    const f = await fixture();
+    await f.receive(
+      f.message("tool", "tool", {
+        headers: { "Auto-Submitted": "auto-generated", Precedence: "bulk" },
+      }),
+    );
+    const [task] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.companyId, f.companyId));
+    expect(task.status).toBe("todo");
+    const [retained] = await db
+      .select()
+      .from(emailMessages)
+      .where(eq(emailMessages.companyId, f.companyId));
+    expect(retained.automatic).toBe(true);
+    expect(f.wakeup).toHaveBeenCalledTimes(1);
+  });
+  it("filters spam, retains auto-reply conversations without wakes, and escapes remote Markdown images", async () => {
     const f = await fixture();
     await f.receive(f.message("spam", "spam", { labels: ["spam"] }));
     await f.receive(
@@ -664,6 +683,23 @@ describe("AgentMail durable email pipeline", () => {
       }),
     );
     expect(f.wakeup).not.toHaveBeenCalled();
+    const autoTasks = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.companyId, f.companyId));
+    expect(autoTasks).toHaveLength(1);
+    expect(autoTasks[0].status).toBe("backlog");
+    const retained = await db
+      .select()
+      .from(emailMessages)
+      .where(eq(emailMessages.companyId, f.companyId));
+    expect(retained).toHaveLength(1);
+    expect(retained[0].automatic).toBe(true);
+    const autoDeliveries = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, f.endpointId));
+    expect(autoDeliveries.map((d) => d.state).sort()).toEqual(["filtered", "processed"]);
     await f.receive(
       f.message("safe", "safe", {
         extracted_text: "![tracker](https://evil.test/pixel)",
@@ -673,8 +709,21 @@ describe("AgentMail durable email pipeline", () => {
       .select()
       .from(issueComments)
       .where(eq(issueComments.companyId, f.companyId));
-    expect(comments).toHaveLength(1);
-    expect(comments[0].body).toContain("\\!\\[tracker\\]");
+    expect(comments).toHaveLength(2);
+    expect(comments.find((c) => c.body.includes("tracker"))?.body).toContain("\\!\\[tracker\\]");
+  });
+  it("marks a new-thread sent copy filtered instead of processed", async () => {
+    const f = await fixture();
+    await f.receive(f.message("own", "own", { labels: ["sent"] }));
+    const [delivery] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, f.endpointId));
+    expect(delivery.state).toBe("filtered");
+    expect(
+      await db.select().from(emailMessages).where(eq(emailMessages.companyId, f.companyId)),
+    ).toHaveLength(0);
+    expect(f.wakeup).not.toHaveBeenCalled();
   });
   it("persists an email child and immutable intent before sending and deduplicates retries", async () => {
     const f = await fixture();
